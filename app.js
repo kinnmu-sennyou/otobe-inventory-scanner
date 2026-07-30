@@ -22,11 +22,7 @@
     overlayProductName: document.getElementById('overlayProductName'),
     overlayProductType: document.getElementById('overlayProductType'),
     overlayShelf: document.getElementById('overlayShelf'),
-    overlayCode: document.getElementById('overlayCode'),
-    overlayCost: document.getElementById('overlayCost'),
-    overlayPreviousCount: document.getElementById('overlayPreviousCount'),
     overlayLastInput: document.getElementById('overlayLastInput'),
-    operatorInput: document.getElementById('operatorInput'),
     historyValue: document.getElementById('historyValue'),
     totalValue: document.getElementById('totalValue'),
     numberKeyButtons: Array.from(document.querySelectorAll('[data-number-key]')),
@@ -358,16 +354,8 @@
       product.name || '商品名未登録';
     elements.overlayProductType.textContent = product.type || '';
     elements.overlayShelf.textContent = product.shelf || '-';
-    elements.overlayCode.textContent = product.code || '-';
-    elements.overlayCost.textContent = product.cost
-      ? product.cost + '円'
-      : '-';
-    elements.overlayPreviousCount.textContent =
-      product.previousCount || '-';
-    elements.overlayLastInput.textContent = [
-      product.inputAt || '',
-      product.inputBy ? '入力者：' + product.inputBy : ''
-    ].filter(Boolean).join(' / ') || '未入力';
+    elements.overlayLastInput.textContent =
+      product.inputAt || '未入力';
 
     elements.entryInput.value = '';
     state.entryCommitted = false;
@@ -677,15 +665,7 @@
       return;
     }
 
-    const operatorName = elements.operatorInput.value.trim();
-
-    if (!operatorName) {
-      showOverlayMessage('入力者名を入力してください。', 'error');
-      elements.operatorInput.focus();
-      return;
-    }
-
-    localStorage.setItem('inventoryOperatorName', operatorName);
+    const operatorName = 'QR棚卸';
     setSaving(true);
 
     try {
@@ -805,8 +785,6 @@
     }
   });
 
-  elements.operatorInput.value =
-    localStorage.getItem('inventoryOperatorName') || '';
   renderCount();
   initializeBridge();
 })();
