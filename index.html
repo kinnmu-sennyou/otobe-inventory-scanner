@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#263238">
+  <title>QR棚卸カメラ</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script src="config.js"></script>
+</head>
+<body>
+  <main class="page">
+    <header class="header">
+      <span class="eyebrow">OTOBE INVENTORY</span>
+      <h1>QR棚卸カメラ</h1>
+      <p>カメラを起動したら、棚のQRへかざすだけ。商品画面を自動で開きます。</p>
+    </header>
+
+    <section class="card">
+      <div class="camera-frame">
+        <div id="reader"></div>
+        <div class="guide" id="cameraGuide">
+          <strong>QRを枠内へ</strong>
+          <span>読み取ると自動で商品情報へ進みます</span>
+        </div>
+      </div>
+
+      <div class="status" id="status">「カメラを起動」を押してください。</div>
+
+      <div class="button-grid">
+        <button class="primary" id="startButton" type="button">カメラを起動</button>
+        <button class="secondary" id="stopButton" type="button" disabled>カメラを停止</button>
+      </div>
+    </section>
+
+    <section class="card manual-card">
+      <h2>手入力で開く</h2>
+      <div class="manual-row">
+        <input id="productIdInput" type="text" autocomplete="off" placeholder="例：3F-00001">
+        <button class="secondary" id="manualButton" type="button">商品を開く</button>
+      </div>
+    </section>
+
+    <p class="note">初回だけカメラの使用許可が表示されます。「許可」を選んでください。</p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
