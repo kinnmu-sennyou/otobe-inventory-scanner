@@ -103,19 +103,43 @@
             </div>
           </div>
 
-          <div class="quick-buttons">
-            <button class="primary" id="plusTenButton" type="button">＋10</button>
-            <button class="secondary" id="plusOneButton" type="button">＋1</button>
-            <button class="secondary" id="undoButton" type="button">1つ戻す</button>
-            <button class="danger-lite" id="clearButton" type="button">全消去</button>
+          <label class="entry-label" for="entryInput">加算する数字</label>
+          <div class="entry-row">
+            <input
+              id="entryInput"
+              class="entry-display"
+              type="text"
+              inputmode="none"
+              readonly
+              aria-readonly="true"
+              placeholder="0"
+            >
+            <button class="multiply-button" id="multiplyButton" type="button">×</button>
+            <button class="primary add-entry-button" id="addEntryButton" type="button">＋加算</button>
           </div>
 
-          <label class="entry-label" for="entryInput">数字を入力してEnterで加算</label>
-          <div class="entry-row">
-            <input id="entryInput" type="number" inputmode="numeric" min="0" step="1" placeholder="例：6">
-            <button class="secondary" id="addEntryButton" type="button">加算</button>
+          <div class="number-keypad" aria-label="数字入力ボタン">
+            <button class="number-key" type="button" data-number-key="1">1</button>
+            <button class="number-key" type="button" data-number-key="2">2</button>
+            <button class="number-key" type="button" data-number-key="3">3</button>
+            <button class="number-key" type="button" data-number-key="4">4</button>
+            <button class="number-key" type="button" data-number-key="5">5</button>
+            <button class="number-key" type="button" data-number-key="6">6</button>
+            <button class="number-key" type="button" data-number-key="7">7</button>
+            <button class="number-key" type="button" data-number-key="8">8</button>
+            <button class="number-key" type="button" data-number-key="9">9</button>
+            <button class="number-key function-key" id="entryClearButton" type="button">入力消去</button>
+            <button class="number-key" type="button" data-number-key="0">0</button>
+            <button class="number-key" type="button" data-number-key="00">00</button>
+            <button class="number-key function-key backspace-key" id="entryBackspaceButton" type="button">1文字戻す</button>
           </div>
-          <p class="entry-hint">数字を入力したまま「総計・登録」を押しても、その数字を加算して登録します。</p>
+
+          <div class="history-buttons">
+            <button class="secondary" id="undoButton" type="button">加算を1つ戻す</button>
+            <button class="danger-lite" id="clearButton" type="button">加算履歴を全消去</button>
+          </div>
+
+          <p class="entry-hint">数字ボタンと「×」で式を作り、「＋加算」で履歴へ追加します。画面では「+5×25+20」と表示し、F列へは先頭の「+」を外して「5×25+20」と保存します。加算後も式は残るので、同じ式は「＋加算」を続けて押せます。</p>
         </section>
 
         <button class="save-button" id="saveButton" type="button">総計・登録</button>

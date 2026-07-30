@@ -3,7 +3,7 @@
 
   const config = window.QR_INVENTORY_CONFIG || {};
   const appUrl = String(config.APPS_SCRIPT_URL || '').trim();
-  const REQUEST_TIMEOUT_MS = 20000;
+  const REQUEST_TIMEOUT_MS = 30000;
 
   const elements = {
     status: document.getElementById('status'),
@@ -29,8 +29,10 @@
     operatorInput: document.getElementById('operatorInput'),
     historyValue: document.getElementById('historyValue'),
     totalValue: document.getElementById('totalValue'),
-    plusTenButton: document.getElementById('plusTenButton'),
-    plusOneButton: document.getElementById('plusOneButton'),
+    numberKeyButtons: Array.from(document.querySelectorAll('[data-number-key]')),
+    multiplyButton: document.getElementById('multiplyButton'),
+    entryClearButton: document.getElementById('entryClearButton'),
+    entryBackspaceButton: document.getElementById('entryBackspaceButton'),
     undoButton: document.getElementById('undoButton'),
     clearButton: document.getElementById('clearButton'),
     entryInput: document.getElementById('entryInput'),
@@ -45,13 +47,15 @@
     running: false,
     scanLocked: false,
     bridgeReady: false,
+    bridgeQueue: Promise.resolve(),
     product: null,
     entries: [],
     saving: false,
     pendingRequests: new Map(),
     requestSequence: 0,
     lastScannedId: '',
-    ignoreSameCodeUntil: 0
+    ignoreSameCodeUntil: 0,
+    entryCommitted: false
   };
 
   function setStatus(message, type = '') {
@@ -89,11 +93,22 @@
     return match ? normalizeProductId(match[0]) : '';
   }
 
-  function createBridgeUrl() {
-    const separator = appUrl.includes('?') ? '&' : '?';
-    return appUrl + separator +
-      'mode=bridge&parentOrigin=' +
-      encodeURIComponent(window.location.origin);
+  function createBridgeRequestUrl(action, payload, requestId) {
+    const url = new URL(appUrl);
+
+    url.searchParams.set('mode', 'bridge');
+    url.searchParams.set('bridgeAction', action);
+    url.searchParams.set('requestId', requestId);
+    url.searchParams.set('parentOrigin', window.location.origin);
+    url.searchParams.set('_ts', String(Date.now()));
+
+    Object.entries(payload || {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        url.searchParams.set(key, String(value));
+      }
+    });
+
+    return url.toString();
   }
 
   function initializeBridge() {
@@ -109,12 +124,15 @@
       return;
     }
 
-    elements.dataBridge.src = createBridgeUrl();
+    state.bridgeReady = true;
+    elements.startButton.disabled = false;
+    setStatus('準備完了。「カメラを起動」を押してください。', 'success');
+    refreshProgress();
   }
 
   function bridgeRequest(action, payload = {}) {
-    return new Promise((resolve, reject) => {
-      if (!state.bridgeReady || !elements.dataBridge.contentWindow) {
+    const runRequest = () => new Promise((resolve, reject) => {
+      if (!state.bridgeReady || !elements.dataBridge) {
         reject(new Error('棚卸データとの接続準備が終わっていません。'));
         return;
       }
@@ -125,7 +143,11 @@
 
       const timeoutId = window.setTimeout(() => {
         state.pendingRequests.delete(requestId);
-        reject(new Error('通信がタイムアウトしました。'));
+        reject(
+          new Error(
+            '通信がタイムアウトしました。Apps Scriptを新バージョンで再デプロイしたか確認してください。'
+          )
+        );
       }, REQUEST_TIMEOUT_MS);
 
       state.pendingRequests.set(requestId, {
@@ -134,39 +156,26 @@
         timeoutId
       });
 
-      elements.dataBridge.contentWindow.postMessage(
-        {
-          source: 'otobe-inventory-scanner',
-          type: 'request',
-          requestId,
-          action,
-          payload
-        },
-        '*'
+      elements.dataBridge.src = createBridgeRequestUrl(
+        action,
+        payload,
+        requestId
       );
     });
+
+    const result = state.bridgeQueue.then(runRequest, runRequest);
+    state.bridgeQueue = result.catch(() => {});
+    return result;
   }
 
   window.addEventListener('message', event => {
-    if (event.source !== elements.dataBridge.contentWindow) {
-      return;
-    }
-
     const message = event.data || {};
 
-    if (message.source !== 'otobe-inventory-bridge') {
-      return;
-    }
-
-    if (message.type === 'ready') {
-      state.bridgeReady = true;
-      elements.startButton.disabled = false;
-      setStatus('準備完了。「カメラを起動」を押してください。', 'success');
-      refreshProgress();
-      return;
-    }
-
-    if (message.type !== 'response' || !message.requestId) {
+    if (
+      message.source !== 'otobe-inventory-bridge' ||
+      message.type !== 'response' ||
+      !message.requestId
+    ) {
       return;
     }
 
@@ -188,14 +197,50 @@
     }
   });
 
-  function parseHistory(history, fallbackTotal) {
-    const text = String(history || '')
+  function normalizeTerm(value) {
+    return String(value || '')
+      .replace(/[＊*xXｘＸ]/g, '×')
       .replace(/[＋]/g, '+')
       .replace(/\s/g, '');
-    const matches = text.match(/\+(\d+)/g);
+  }
 
-    if (matches && matches.join('') === text) {
-      return matches.map(value => Number(value.slice(1)));
+  function evaluateTerm(term) {
+    const normalized = normalizeTerm(term);
+
+    if (!/^\d+(?:×\d+)*$/.test(normalized)) {
+      throw new Error('数字または「数字×数字」の形式で入力してください。');
+    }
+
+    const factors = normalized.split('×').map(Number);
+    let result = 1;
+
+    factors.forEach(factor => {
+      if (!Number.isSafeInteger(factor) || factor < 0) {
+        throw new Error('0以上の整数だけ使用できます。');
+      }
+
+      result *= factor;
+
+      if (!Number.isSafeInteger(result)) {
+        throw new Error('計算結果が大きすぎます。');
+      }
+    });
+
+    return result;
+  }
+
+  function parseHistory(history, fallbackTotal) {
+    const text = normalizeTerm(history).replace(/^\+/, '');
+
+    if (text) {
+      const terms = text.split('+');
+
+      try {
+        terms.forEach(evaluateTerm);
+        return terms;
+      } catch (error) {
+        // 旧データは下の総計へフォールバックする。
+      }
     }
 
     if (
@@ -203,22 +248,32 @@
       fallbackTotal !== null &&
       Number.isInteger(Number(fallbackTotal))
     ) {
-      return [Number(fallbackTotal)];
+      return [String(Number(fallbackTotal))];
     }
 
     return [];
   }
 
-  function currentHistory() {
-    return state.entries.map(value => '+' + value).join('');
+  // 画面表示は従来どおり、先頭にも「+」を付ける。
+  function currentHistoryDisplay() {
+    return state.entries.map(term => '+' + term).join('');
+  }
+
+  // F列へ保存する値は、先頭に「+」を付けない。
+  function currentStoredHistory() {
+    return state.entries.join('+');
   }
 
   function currentTotal() {
-    return state.entries.reduce((sum, value) => sum + value, 0);
+    return state.entries.reduce(
+      (sum, term) => sum + evaluateTerm(term),
+      0
+    );
   }
 
   function renderCount() {
-    elements.historyValue.textContent = currentHistory() || '未入力';
+    elements.historyValue.textContent =
+      currentHistoryDisplay() || '未入力';
     elements.totalValue.textContent =
       currentTotal().toLocaleString('ja-JP');
     elements.undoButton.disabled =
@@ -247,8 +302,10 @@
     state.saving = isSaving;
     [
       elements.saveButton,
-      elements.plusTenButton,
-      elements.plusOneButton,
+      ...elements.numberKeyButtons,
+      elements.multiplyButton,
+      elements.entryClearButton,
+      elements.entryBackspaceButton,
       elements.addEntryButton,
       elements.closeOverlayButton
     ].forEach(button => {
@@ -277,6 +334,7 @@
     state.product = null;
     state.entries = [];
     elements.entryInput.value = '';
+    state.entryCommitted = false;
     state.scanLocked = false;
     state.ignoreSameCodeUntil = Date.now() + 1400;
 
@@ -312,13 +370,11 @@
     ].filter(Boolean).join(' / ') || '未入力';
 
     elements.entryInput.value = '';
+    state.entryCommitted = false;
     renderCount();
     clearOverlayMessage();
     setOverlayLoading(false);
 
-    window.setTimeout(() => {
-      elements.entryInput.focus();
-    }, 80);
   }
 
   async function showProduct(productId) {
@@ -486,25 +542,112 @@
       return false;
     }
 
-    const number = Number(value);
+    const term = normalizeTerm(value);
 
-    if (!Number.isInteger(number) || number < 0) {
-      showOverlayMessage('0以上の整数を入力してください。', 'error');
+    if (term === '') {
+      showOverlayMessage('数字ボタンで加算する数を入力してください。', 'error');
       return false;
     }
 
-    state.entries.push(number);
-    elements.entryInput.value = '';
+    try {
+      evaluateTerm(term);
+    } catch (error) {
+      showOverlayMessage(error.message, 'error');
+      return false;
+    }
+
+    state.entries.push(term);
+    elements.entryInput.value = term;
+    state.entryCommitted = true;
     clearOverlayMessage();
     renderCount();
-    elements.entryInput.focus();
     return true;
   }
 
-  function commitPendingEntry() {
-    const text = elements.entryInput.value;
+  function sanitizeEntryValue(value) {
+    return normalizeTerm(value).replace(/[^0-9×]/g, '');
+  }
+
+  function appendEntryDigit(digit) {
+    if (state.saving) {
+      return;
+    }
+
+    const cleanDigits = String(digit || '').replace(/[^0-9]/g, '');
+
+    if (cleanDigits === '') {
+      return;
+    }
+
+    let current = sanitizeEntryValue(elements.entryInput.value);
+
+    if (state.entryCommitted || current === '') {
+      current = cleanDigits === '00' ? '0' : cleanDigits;
+    } else {
+      const parts = current.split('×');
+      const lastFactor = parts[parts.length - 1];
+
+      if (lastFactor === '0') {
+        parts[parts.length - 1] = cleanDigits === '00' ? '0' : cleanDigits;
+        current = parts.join('×');
+      } else {
+        current += cleanDigits;
+      }
+    }
+
+    // 式全体が長くなりすぎないよう24文字までにする。
+    elements.entryInput.value = current.slice(0, 24);
+    state.entryCommitted = false;
+    clearOverlayMessage();
+  }
+
+  function appendMultiplyOperator() {
+    if (state.saving) {
+      return;
+    }
+
+    const current = sanitizeEntryValue(elements.entryInput.value);
+
+    if (!current || current.endsWith('×')) {
+      showOverlayMessage('「×」の前に数字を入力してください。', 'error');
+      return;
+    }
+
+    elements.entryInput.value = (current + '×').slice(0, 24);
+    state.entryCommitted = false;
+    clearOverlayMessage();
+  }
+
+  function clearEntryValue() {
+    if (state.saving) {
+      return;
+    }
+
+    elements.entryInput.value = '';
+    state.entryCommitted = false;
+    clearOverlayMessage();
+  }
+
+  function backspaceEntryValue() {
+    if (state.saving) {
+      return;
+    }
+
+    const current = sanitizeEntryValue(elements.entryInput.value);
+    elements.entryInput.value = current.slice(0, -1);
+    state.entryCommitted = false;
+    clearOverlayMessage();
+  }
+
+  function commitPendingEntry(options = {}) {
+    const text = sanitizeEntryValue(elements.entryInput.value);
+    elements.entryInput.value = text;
 
     if (text === '') {
+      return options.allowEmpty === true;
+    }
+
+    if (options.skipIfCommitted && state.entryCommitted) {
       return true;
     }
 
@@ -518,7 +661,10 @@
 
     clearOverlayMessage();
 
-    if (!commitPendingEntry()) {
+    if (!commitPendingEntry({
+      allowEmpty: true,
+      skipIfCommitted: true
+    })) {
       return;
     }
 
@@ -545,7 +691,7 @@
     try {
       const response = await bridgeRequest('saveInventory', {
         productId: state.product.id,
-        history: currentHistory(),
+        history: currentStoredHistory(),
         total: currentTotal(),
         operatorName
       });
@@ -625,19 +771,20 @@
     closeOverlay();
   });
 
-  elements.plusTenButton.addEventListener('click', () => addValue(10));
-  elements.plusOneButton.addEventListener('click', () => addValue(1));
-  elements.addEntryButton.addEventListener('click', commitPendingEntry);
-  elements.entryInput.addEventListener('keydown', event => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      commitPendingEntry();
-    }
+  elements.numberKeyButtons.forEach(button => {
+    button.addEventListener('click', () => {
+      appendEntryDigit(button.dataset.numberKey);
+    });
+  });
+  elements.multiplyButton.addEventListener('click', appendMultiplyOperator);
+  elements.entryClearButton.addEventListener('click', clearEntryValue);
+  elements.entryBackspaceButton.addEventListener('click', backspaceEntryValue);
+  elements.addEntryButton.addEventListener('click', () => {
+    commitPendingEntry();
   });
   elements.undoButton.addEventListener('click', () => {
     state.entries.pop();
     renderCount();
-    elements.entryInput.focus();
   });
   elements.clearButton.addEventListener('click', () => {
     if (
@@ -646,6 +793,7 @@
     ) {
       state.entries = [];
       elements.entryInput.value = '';
+      state.entryCommitted = false;
       renderCount();
     }
   });
