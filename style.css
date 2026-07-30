@@ -155,6 +155,43 @@ h1 {
   font-size: 18px;
 }
 
+
+.sync-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin: -5px 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 8px 9px 8px 12px;
+  background: #fff;
+  color: var(--sub);
+  font-size: 12px;
+}
+
+.sync-bar.sending {
+  border-color: #d9c68c;
+  background: #fffaf0;
+  color: #785d09;
+}
+
+.sync-bar.error {
+  border-color: #e4baba;
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.sync-bar button {
+  min-height: 36px;
+  border: 1px solid #b6c1c6;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fff;
+  color: var(--text);
+  font-size: 11px;
+}
+
 .card {
   margin-bottom: 14px;
   border: 1px solid var(--line);
@@ -270,7 +307,7 @@ h1 {
   align-items: flex-end;
   justify-content: center;
   opacity: 0;
-  transition: opacity .18s ease, visibility .18s ease;
+  transition: opacity .08s ease, visibility .08s ease;
 }
 
 .product-overlay.visible {
@@ -298,7 +335,7 @@ h1 {
   background: #fff;
   box-shadow: 0 -12px 36px rgba(0, 0, 0, .22);
   transform: translateY(24px);
-  transition: transform .2s ease;
+  transition: transform .1s ease;
 }
 
 .product-overlay.visible .product-panel {

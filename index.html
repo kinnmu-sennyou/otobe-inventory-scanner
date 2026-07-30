@@ -32,6 +32,11 @@
       </div>
     </section>
 
+    <div class="sync-bar" aria-live="polite">
+      <span id="syncState">商品データを準備しています。</span>
+      <button id="refreshDataButton" type="button">商品データ更新</button>
+    </div>
+
     <section class="card">
       <div class="camera-frame">
         <div id="reader"></div>
@@ -41,7 +46,7 @@
         </div>
       </div>
 
-      <div class="status" id="status">データ連携を準備しています。</div>
+      <div class="status" id="status">商品データを準備しています。</div>
 
       <div class="button-grid">
         <button class="primary" id="startButton" type="button" disabled>カメラを起動</button>

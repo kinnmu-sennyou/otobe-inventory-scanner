@@ -4,6 +4,10 @@
   const config = window.QR_INVENTORY_CONFIG || {};
   const appUrl = String(config.APPS_SCRIPT_URL || '').trim();
   const REQUEST_TIMEOUT_MS = 30000;
+  const CATALOG_CACHE_KEY = 'otobeInventoryCatalogV3';
+  const SAVE_QUEUE_KEY = 'otobeInventorySaveQueueV3';
+  const CATALOG_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+  const RETRY_DELAY_MS = 5000;
 
   const elements = {
     status: document.getElementById('status'),
@@ -14,6 +18,9 @@
     completedCount: document.getElementById('completedCount'),
     remainingCount: document.getElementById('remainingCount'),
     progressPercent: document.getElementById('progressPercent'),
+    syncState: document.getElementById('syncState'),
+    refreshDataButton: document.getElementById('refreshDataButton'),
+    syncBar: document.querySelector('.sync-bar'),
     productOverlay: document.getElementById('productOverlay'),
     closeOverlayButton: document.getElementById('closeOverlayButton'),
     overlayLoading: document.getElementById('overlayLoading'),
@@ -51,12 +58,25 @@
     requestSequence: 0,
     lastScannedId: '',
     ignoreSameCodeUntil: 0,
-    entryCommitted: false
+    entryCommitted: false,
+    catalog: new Map(),
+    catalogLoaded: false,
+    catalogUpdatedAt: 0,
+    catalogRefreshing: false,
+    pendingSaves: [],
+    saveWorkerRunning: false,
+    retryTimer: 0,
+    syncError: ''
   };
 
   function setStatus(message, type = '') {
     elements.status.textContent = message;
     elements.status.className = 'status' + (type ? ' ' + type : '');
+  }
+
+  function setSyncState(message, type = '') {
+    elements.syncState.textContent = message;
+    elements.syncBar.className = 'sync-bar' + (type ? ' ' + type : '');
   }
 
   function normalizeProductId(value) {
@@ -107,25 +127,6 @@
     return url.toString();
   }
 
-  function initializeBridge() {
-    if (!appUrl || !/^https:\/\//i.test(appUrl)) {
-      setStatus('config.jsのApps Script URLを確認してください。', 'error');
-      return;
-    }
-
-    try {
-      new URL(appUrl);
-    } catch (error) {
-      setStatus('Apps Script URLが正しくありません。', 'error');
-      return;
-    }
-
-    state.bridgeReady = true;
-    elements.startButton.disabled = false;
-    setStatus('準備完了。「カメラを起動」を押してください。', 'success');
-    refreshProgress();
-  }
-
   function bridgeRequest(action, payload = {}) {
     const runRequest = () => new Promise((resolve, reject) => {
       if (!state.bridgeReady || !elements.dataBridge) {
@@ -139,11 +140,7 @@
 
       const timeoutId = window.setTimeout(() => {
         state.pendingRequests.delete(requestId);
-        reject(
-          new Error(
-            '通信がタイムアウトしました。Apps Scriptを新バージョンで再デプロイしたか確認してください。'
-          )
-        );
+        reject(new Error('通信がタイムアウトしました。'));
       }, REQUEST_TIMEOUT_MS);
 
       state.pendingRequests.set(requestId, {
@@ -235,7 +232,7 @@
         terms.forEach(evaluateTerm);
         return terms;
       } catch (error) {
-        // 旧データは下の総計へフォールバックする。
+        // 旧データは総計へフォールバックする。
       }
     }
 
@@ -250,12 +247,10 @@
     return [];
   }
 
-  // 画面表示は従来どおり、先頭にも「+」を付ける。
   function currentHistoryDisplay() {
     return state.entries.map(term => '+' + term).join('');
   }
 
-  // F列へ保存する値は、先頭に「+」を付けない。
   function currentStoredHistory() {
     return state.entries.join('+');
   }
@@ -332,17 +327,17 @@
     elements.entryInput.value = '';
     state.entryCommitted = false;
     state.scanLocked = false;
-    state.ignoreSameCodeUntil = Date.now() + 1400;
+    state.ignoreSameCodeUntil = Date.now() + 900;
 
-    if (options.saved) {
-      setStatus('登録しました。次のQRをかざしてください。', 'success');
+    if (options.queued) {
+      setStatus('登録を受け付けました。次のQRをかざしてください。', 'success');
     } else if (state.running) {
       setStatus('カメラ起動中。次のQRを枠内へかざしてください。', 'success');
     }
   }
 
   function renderProduct(product) {
-    state.product = product;
+    state.product = { ...product };
     setSaving(false);
     state.entries = parseHistory(
       product.countHistory,
@@ -362,7 +357,212 @@
     renderCount();
     clearOverlayMessage();
     setOverlayLoading(false);
+  }
 
+  function productIsCompleted(product) {
+    return product &&
+      product.currentCount !== '' &&
+      product.currentCount !== null &&
+      product.currentCount !== undefined;
+  }
+
+  function renderProgressFromCatalog() {
+    const products = Array.from(state.catalog.values());
+    const total = products.length;
+    const completed = products.reduce(
+      (count, product) => count + (productIsCompleted(product) ? 1 : 0),
+      0
+    );
+    const percent = total === 0
+      ? 0
+      : Math.round((completed / total) * 1000) / 10;
+
+    elements.completedCount.textContent =
+      completed.toLocaleString('ja-JP');
+    elements.remainingCount.textContent =
+      (total - completed).toLocaleString('ja-JP');
+    elements.progressPercent.textContent =
+      percent.toLocaleString('ja-JP') + '%';
+  }
+
+  function serializeCatalog() {
+    return {
+      updatedAt: state.catalogUpdatedAt || Date.now(),
+      products: Array.from(state.catalog.values())
+    };
+  }
+
+  function persistCatalog() {
+    try {
+      localStorage.setItem(
+        CATALOG_CACHE_KEY,
+        JSON.stringify(serializeCatalog())
+      );
+    } catch (error) {
+      console.warn('商品キャッシュを保存できませんでした。', error);
+    }
+  }
+
+  function loadCatalogCache() {
+    try {
+      const raw = localStorage.getItem(CATALOG_CACHE_KEY);
+
+      if (!raw) {
+        return false;
+      }
+
+      const data = JSON.parse(raw);
+      const products = Array.isArray(data.products)
+        ? data.products
+        : [];
+
+      if (products.length === 0) {
+        return false;
+      }
+
+      state.catalog.clear();
+      products.forEach(product => {
+        const id = normalizeProductId(product.id);
+        if (id) {
+          state.catalog.set(id, { ...product, id });
+        }
+      });
+      state.catalogUpdatedAt = Number(data.updatedAt) || 0;
+      state.catalogLoaded = state.catalog.size > 0;
+      applyPendingSavesToCatalog();
+      renderProgressFromCatalog();
+      return state.catalogLoaded;
+    } catch (error) {
+      console.warn('商品キャッシュを読み込めませんでした。', error);
+      return false;
+    }
+  }
+
+  function loadSaveQueue() {
+    try {
+      const raw = localStorage.getItem(SAVE_QUEUE_KEY);
+      const jobs = raw ? JSON.parse(raw) : [];
+      state.pendingSaves = Array.isArray(jobs) ? jobs : [];
+    } catch (error) {
+      state.pendingSaves = [];
+    }
+  }
+
+  function persistSaveQueue() {
+    try {
+      localStorage.setItem(
+        SAVE_QUEUE_KEY,
+        JSON.stringify(state.pendingSaves)
+      );
+    } catch (error) {
+      console.warn('未送信データを保存できませんでした。', error);
+    }
+  }
+
+  function applySaveToLocalProduct(payload, inputAt) {
+    const id = normalizeProductId(payload.productId);
+    const current = state.catalog.get(id) || {
+      id,
+      shelf: '',
+      name: '商品情報更新中',
+      type: ''
+    };
+
+    state.catalog.set(id, {
+      ...current,
+      currentCount: Number(payload.total),
+      countHistory: String(payload.history || ''),
+      inputAt: inputAt || new Date().toLocaleString('ja-JP')
+    });
+  }
+
+  function applyPendingSavesToCatalog() {
+    state.pendingSaves.forEach(job => {
+      applySaveToLocalProduct(job.payload, job.createdDisplay);
+    });
+  }
+
+  function updateSyncIndicator() {
+    const pendingCount = state.pendingSaves.length;
+
+    if (state.syncError) {
+      setSyncState(state.syncError, 'error');
+      return;
+    }
+
+    if (state.catalogRefreshing) {
+      setSyncState('商品データを更新しています。', 'sending');
+      return;
+    }
+
+    if (state.saveWorkerRunning || pendingCount > 0) {
+      setSyncState(
+        '登録を裏送信中：残り' + pendingCount + '件',
+        'sending'
+      );
+      return;
+    }
+
+    const count = state.catalog.size;
+    setSyncState(
+      count > 0
+        ? '高速読取準備済み：' + count.toLocaleString('ja-JP') + '商品'
+        : '商品データ未取得',
+      ''
+    );
+  }
+
+  async function refreshCatalog(options = {}) {
+    if (!state.bridgeReady || state.catalogRefreshing) {
+      return false;
+    }
+
+    if (state.pendingSaves.length > 0 && !options.force) {
+      return false;
+    }
+
+    state.catalogRefreshing = true;
+    state.syncError = '';
+    elements.refreshDataButton.disabled = true;
+    updateSyncIndicator();
+
+    try {
+      const response = await bridgeRequest('getScannerCatalog');
+
+      if (!response || !response.ok || !Array.isArray(response.products)) {
+        throw new Error('商品一覧を取得できませんでした。');
+      }
+
+      state.catalog.clear();
+      response.products.forEach(product => {
+        const id = normalizeProductId(product.id);
+        if (id) {
+          state.catalog.set(id, { ...product, id });
+        }
+      });
+      state.catalogLoaded = true;
+      state.catalogUpdatedAt = Date.now();
+      applyPendingSavesToCatalog();
+      persistCatalog();
+      renderProgressFromCatalog();
+      elements.startButton.disabled = false;
+      updateSyncIndicator();
+      return true;
+    } catch (error) {
+      if (!state.catalogLoaded) {
+        state.syncError = '商品データ取得失敗。QR読取時に個別取得します。';
+        setSyncState(state.syncError, 'error');
+        elements.startButton.disabled = false;
+      } else {
+        state.syncError = '商品データ更新に失敗しました。';
+        setSyncState(state.syncError, 'error');
+      }
+      return false;
+    } finally {
+      state.catalogRefreshing = false;
+      elements.refreshDataButton.disabled = false;
+      updateSyncIndicator();
+    }
   }
 
   async function showProduct(productId) {
@@ -379,8 +579,17 @@
 
     state.scanLocked = true;
     openOverlay();
-    setOverlayLoading(true);
     clearOverlayMessage();
+
+    const cachedProduct = state.catalog.get(id);
+
+    if (cachedProduct) {
+      renderProduct(cachedProduct);
+      state.lastScannedId = id;
+      return;
+    }
+
+    setOverlayLoading(true);
     elements.overlayProductId.textContent = id;
     elements.overlayProductName.textContent = '商品情報を確認中';
     elements.overlayProductType.textContent = '';
@@ -398,6 +607,8 @@
         );
       }
 
+      state.catalog.set(id, response.product);
+      persistCatalog();
       renderProduct(response.product);
       state.lastScannedId = id;
     } catch (error) {
@@ -466,10 +677,10 @@
       await state.scanner.start(
         { facingMode: 'environment' },
         {
-          fps: 12,
+          fps: 18,
           qrbox: (width, height) => {
             const size = Math.floor(
-              Math.min(width, height) * .68
+              Math.min(width, height) * .74
             );
             return { width: size, height: size };
           },
@@ -583,7 +794,6 @@
       }
     }
 
-    // 式全体が長くなりすぎないよう24文字までにする。
     elements.entryInput.value = current.slice(0, 24);
     state.entryCommitted = false;
     clearOverlayMessage();
@@ -642,7 +852,96 @@
     return addValue(text);
   }
 
-  async function saveInventory() {
+  function enqueueSave(payload) {
+    const now = new Date();
+    const job = {
+      id: Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+      payload,
+      createdAt: now.toISOString(),
+      createdDisplay: now.toLocaleString('ja-JP'),
+      attempts: 0
+    };
+
+    state.pendingSaves.push(job);
+    applySaveToLocalProduct(payload, job.createdDisplay);
+    persistSaveQueue();
+    persistCatalog();
+    renderProgressFromCatalog();
+    updateSyncIndicator();
+    processSaveQueue();
+  }
+
+  function scheduleRetry() {
+    if (state.retryTimer) {
+      return;
+    }
+
+    state.retryTimer = window.setTimeout(() => {
+      state.retryTimer = 0;
+      processSaveQueue();
+    }, RETRY_DELAY_MS);
+  }
+
+  async function processSaveQueue() {
+    if (
+      state.saveWorkerRunning ||
+      !state.bridgeReady ||
+      state.pendingSaves.length === 0
+    ) {
+      updateSyncIndicator();
+      return;
+    }
+
+    state.saveWorkerRunning = true;
+    state.syncError = '';
+    updateSyncIndicator();
+
+    while (state.pendingSaves.length > 0) {
+      const job = state.pendingSaves[0];
+
+      try {
+        const response = await bridgeRequest(
+          'saveInventory',
+          job.payload
+        );
+
+        if (!response || !response.ok) {
+          throw new Error(
+            response && response.message
+              ? response.message
+              : '登録できませんでした。'
+          );
+        }
+
+        if (response.product) {
+          const id = normalizeProductId(response.product.id);
+          state.catalog.set(id, response.product);
+        }
+
+        state.pendingSaves.shift();
+        state.syncError = '';
+        persistSaveQueue();
+        persistCatalog();
+        renderProgressFromCatalog();
+      } catch (error) {
+        job.attempts = Number(job.attempts || 0) + 1;
+        job.lastError = error && error.message
+          ? error.message
+          : '送信に失敗しました。';
+        persistSaveQueue();
+        state.syncError =
+          '未送信' + state.pendingSaves.length + '件。自動再送します。';
+        setSyncState(state.syncError, 'error');
+        scheduleRetry();
+        break;
+      }
+    }
+
+    state.saveWorkerRunning = false;
+    updateSyncIndicator();
+  }
+
+  function saveInventory() {
     if (state.saving || !state.product) {
       return;
     }
@@ -661,73 +960,20 @@
         '数量を入力してください。0個の場合は0を入力してください。',
         'error'
       );
-      elements.entryInput.focus();
       return;
     }
 
-    const operatorName = 'QR棚卸';
+    const payload = {
+      productId: state.product.id,
+      history: currentStoredHistory(),
+      total: currentTotal(),
+      operatorName: 'QR棚卸'
+    };
+
     setSaving(true);
-
-    try {
-      const response = await bridgeRequest('saveInventory', {
-        productId: state.product.id,
-        history: currentStoredHistory(),
-        total: currentTotal(),
-        operatorName
-      });
-
-      if (!response || !response.ok) {
-        throw new Error(
-          response && response.message
-            ? response.message
-            : '登録できませんでした。'
-        );
-      }
-
-      showOverlayMessage(
-        response.message || '棚卸数量を登録しました。',
-        'success'
-      );
-      await refreshProgress();
-
-      window.setTimeout(() => {
-        setSaving(false);
-        closeOverlay({ saved: true });
-      }, 700);
-    } catch (error) {
-      setSaving(false);
-      showOverlayMessage(
-        error && error.message
-          ? error.message
-          : '登録中にエラーが発生しました。',
-        'error'
-      );
-    }
-  }
-
-  async function refreshProgress() {
-    if (!state.bridgeReady) {
-      return;
-    }
-
-    try {
-      const response = await bridgeRequest(
-        'getInventoryProgress'
-      );
-
-      if (!response || !response.ok) {
-        return;
-      }
-
-      elements.completedCount.textContent =
-        Number(response.completed || 0).toLocaleString('ja-JP');
-      elements.remainingCount.textContent =
-        Number(response.remaining || 0).toLocaleString('ja-JP');
-      elements.progressPercent.textContent =
-        Number(response.percent || 0).toLocaleString('ja-JP') + '%';
-    } catch (error) {
-      console.error(error);
-    }
+    enqueueSave(payload);
+    setSaving(false);
+    closeOverlay({ queued: true });
   }
 
   function manualOpen() {
@@ -738,9 +984,55 @@
     showProduct(elements.productIdInput.value);
   }
 
+  async function initializeBridge() {
+    if (!appUrl || !/^https:\/\//i.test(appUrl)) {
+      setStatus('config.jsのApps Script URLを確認してください。', 'error');
+      return;
+    }
+
+    try {
+      new URL(appUrl);
+    } catch (error) {
+      setStatus('Apps Script URLが正しくありません。', 'error');
+      return;
+    }
+
+    state.bridgeReady = true;
+    loadSaveQueue();
+    const hasCache = loadCatalogCache();
+
+    if (hasCache) {
+      elements.startButton.disabled = false;
+      setStatus('準備完了。「カメラを起動」を押してください。', 'success');
+      updateSyncIndicator();
+
+      if (
+        Date.now() - state.catalogUpdatedAt > CATALOG_MAX_AGE_MS &&
+        state.pendingSaves.length === 0
+      ) {
+        window.setTimeout(() => refreshCatalog(), 2500);
+      }
+    } else {
+      setStatus('初回だけ商品データを読み込んでいます。');
+      await refreshCatalog({ force: true });
+      setStatus('準備完了。「カメラを起動」を押してください。', 'success');
+    }
+
+    processSaveQueue();
+  }
+
   elements.startButton.addEventListener('click', startScanner);
   elements.stopButton.addEventListener('click', stopScanner);
   elements.manualButton.addEventListener('click', manualOpen);
+  elements.refreshDataButton.addEventListener('click', async () => {
+    if (state.pendingSaves.length > 0) {
+      setSyncState('未送信データを先に送信しています。', 'sending');
+      processSaveQueue();
+      return;
+    }
+
+    await refreshCatalog({ force: true });
+  });
   elements.productIdInput.addEventListener('keydown', event => {
     if (event.key === 'Enter') {
       manualOpen();
@@ -779,7 +1071,16 @@
   });
   elements.saveButton.addEventListener('click', saveInventory);
 
+  window.addEventListener('online', processSaveQueue);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      processSaveQueue();
+    }
+  });
   window.addEventListener('pagehide', () => {
+    persistSaveQueue();
+    persistCatalog();
+
     if (state.scanner && state.running) {
       state.scanner.stop().catch(() => {});
     }
