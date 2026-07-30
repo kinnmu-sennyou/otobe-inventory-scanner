@@ -17,6 +17,29 @@
   box-sizing: border-box;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+  touch-action: manipulation;
+}
+
+button,
+input,
+.number-keypad,
+.number-keypad .number-key,
+.entry-row,
+.history-buttons,
+.save-button {
+  touch-action: manipulation;
+}
+
+button,
+.number-keypad .number-key {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
 html.overlay-open,
 body.overlay-open {
   overflow: hidden;
@@ -509,6 +532,8 @@ h1 {
 
 .number-keypad {
   display: grid;
+  -webkit-user-select: none;
+  user-select: none;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin-top: 10px;
