@@ -4,8 +4,8 @@
   const config = window.QR_INVENTORY_CONFIG || {};
   const appUrl = String(config.APPS_SCRIPT_URL || '').trim();
   const REQUEST_TIMEOUT_MS = 30000;
-  const CATALOG_CACHE_KEY = 'otobeInventoryCatalogV3';
-  const SAVE_QUEUE_KEY = 'otobeInventorySaveQueueV3';
+  const CATALOG_CACHE_KEY = 'otobeInventoryCatalogV4';
+  const SAVE_QUEUE_KEY = 'otobeInventorySaveQueueV4';
   const CATALOG_MAX_AGE_MS = 6 * 60 * 60 * 1000;
   const RETRY_DELAY_MS = 5000;
 
@@ -88,6 +88,7 @@
 
   function extractProductId(decodedText) {
     const text = String(decodedText || '').trim();
+    const pattern = /^[A-Z0-9]{2,8}-\d{5,}$/i;
 
     try {
       const url = new URL(text);
@@ -95,17 +96,14 @@
         url.searchParams.get('id') ||
         url.searchParams.get('productId');
 
-      if (
-        fromQuery &&
-        /^3F-\d{5,}$/i.test(normalizeProductId(fromQuery))
-      ) {
+      if (fromQuery && pattern.test(normalizeProductId(fromQuery))) {
         return normalizeProductId(fromQuery);
       }
     } catch (error) {
       // URLでないQRは正規表現で確認する。
     }
 
-    const match = normalizeProductId(text).match(/3F-\d{5,}/i);
+    const match = normalizeProductId(text).match(/[A-Z0-9]{2,8}-\d{5,}/i);
     return match ? normalizeProductId(match[0]) : '';
   }
 
@@ -348,7 +346,7 @@
     elements.overlayProductName.textContent =
       product.name || '商品名未登録';
     elements.overlayProductType.textContent = product.type || '';
-    elements.overlayShelf.textContent = product.shelf || '-';
+    elements.overlayShelf.textContent = [product.locationName, product.shelf].filter(Boolean).join(' / ') || '-';
     elements.overlayLastInput.textContent =
       product.inputAt || '未入力';
 
@@ -568,7 +566,7 @@
   async function showProduct(productId) {
     const id = normalizeProductId(productId);
 
-    if (!/^3F-\d{5,}$/.test(id)) {
+    if (!/^[A-Z0-9]{2,8}-\d{5,}$/.test(id)) {
       setStatus(
         '商品IDを読み取れませんでした。棚卸用QRをかざしてください。',
         'error'
