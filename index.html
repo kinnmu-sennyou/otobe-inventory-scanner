@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
@@ -14,36 +14,123 @@
     <header class="header">
       <span class="eyebrow">OTOBE INVENTORY</span>
       <h1>QR棚卸カメラ</h1>
-      <p>カメラを起動したら、棚のQRへかざすだけ。商品画面を自動で開きます。</p>
+      <p>QRをかざすと、この画面の上に商品情報と数量入力が表示されます。</p>
     </header>
+
+    <section class="progress" aria-label="棚卸進捗">
+      <div class="progress-item">
+        <span>完了</span>
+        <strong id="completedCount">-</strong>
+      </div>
+      <div class="progress-item">
+        <span>未棚卸</span>
+        <strong id="remainingCount">-</strong>
+      </div>
+      <div class="progress-item">
+        <span>進捗</span>
+        <strong id="progressPercent">-%</strong>
+      </div>
+    </section>
 
     <section class="card">
       <div class="camera-frame">
         <div id="reader"></div>
         <div class="guide" id="cameraGuide">
           <strong>QRを枠内へ</strong>
-          <span>読み取ると自動で商品情報へ進みます</span>
+          <span>読み取ると入力画面が重なって表示されます</span>
         </div>
       </div>
 
-      <div class="status" id="status">「カメラを起動」を押してください。</div>
+      <div class="status" id="status">データ連携を準備しています。</div>
 
       <div class="button-grid">
-        <button class="primary" id="startButton" type="button">カメラを起動</button>
+        <button class="primary" id="startButton" type="button" disabled>カメラを起動</button>
         <button class="secondary" id="stopButton" type="button" disabled>カメラを停止</button>
       </div>
     </section>
 
     <section class="card manual-card">
-      <h2>手入力で開く</h2>
+      <h2>商品IDを手入力</h2>
       <div class="manual-row">
         <input id="productIdInput" type="text" autocomplete="off" placeholder="例：3F-00001">
-        <button class="secondary" id="manualButton" type="button">商品を開く</button>
+        <button class="secondary" id="manualButton" type="button">商品を表示</button>
       </div>
     </section>
 
-    <p class="note">初回だけカメラの使用許可が表示されます。「許可」を選んでください。</p>
+    <p class="note">初回だけカメラ使用の確認が表示されます。「許可」を選んでください。</p>
   </main>
+
+  <section class="product-overlay" id="productOverlay" aria-hidden="true">
+    <div class="overlay-backdrop"></div>
+
+    <article class="product-panel" role="dialog" aria-modal="true" aria-labelledby="overlayProductName">
+      <div class="panel-handle" aria-hidden="true"></div>
+
+      <header class="panel-header">
+        <div>
+          <span class="product-id" id="overlayProductId">-</span>
+          <h2 id="overlayProductName">商品情報</h2>
+          <p id="overlayProductType"></p>
+        </div>
+        <button class="close-button" id="closeOverlayButton" type="button" aria-label="閉じる">×</button>
+      </header>
+
+      <div class="overlay-loading" id="overlayLoading">商品情報を読み込んでいます。</div>
+
+      <div class="product-content" id="productContent" hidden>
+        <dl class="product-details">
+          <div><dt>棚番</dt><dd id="overlayShelf">-</dd></div>
+          <div><dt>品番</dt><dd id="overlayCode">-</dd></div>
+          <div><dt>原価</dt><dd id="overlayCost">-</dd></div>
+          <div><dt>前回数量</dt><dd id="overlayPreviousCount">-</dd></div>
+          <div><dt>前回入力</dt><dd id="overlayLastInput">未入力</dd></div>
+        </dl>
+
+        <div class="field-block">
+          <label for="operatorInput">入力者名</label>
+          <input id="operatorInput" type="text" autocomplete="name" maxlength="30" placeholder="例：乙部">
+        </div>
+
+        <section class="count-panel">
+          <div class="count-summary">
+            <div class="history-box">
+              <span>F列へ入る加算履歴</span>
+              <strong id="historyValue">未入力</strong>
+            </div>
+            <div class="total-box">
+              <span>現在の合計</span>
+              <strong id="totalValue">0</strong>
+            </div>
+          </div>
+
+          <div class="quick-buttons">
+            <button class="primary" id="plusTenButton" type="button">＋10</button>
+            <button class="secondary" id="plusOneButton" type="button">＋1</button>
+            <button class="secondary" id="undoButton" type="button">1つ戻す</button>
+            <button class="danger-lite" id="clearButton" type="button">全消去</button>
+          </div>
+
+          <label class="entry-label" for="entryInput">数字を入力してEnterで加算</label>
+          <div class="entry-row">
+            <input id="entryInput" type="number" inputmode="numeric" min="0" step="1" placeholder="例：6">
+            <button class="secondary" id="addEntryButton" type="button">加算</button>
+          </div>
+          <p class="entry-hint">数字を入力したまま「総計・登録」を押しても、その数字を加算して登録します。</p>
+        </section>
+
+        <button class="save-button" id="saveButton" type="button">総計・登録</button>
+        <div class="overlay-message" id="overlayMessage" role="status"></div>
+      </div>
+    </article>
+  </section>
+
+  <iframe
+    id="dataBridge"
+    class="data-bridge"
+    title="棚卸データ連携"
+    aria-hidden="true"
+  ></iframe>
+
   <script src="app.js"></script>
 </body>
 </html>
