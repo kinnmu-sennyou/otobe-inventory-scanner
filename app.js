@@ -7,7 +7,7 @@
   const CATALOG_CACHE_PREFIX = 'otobeInventoryCatalogV9:';
   const SELECTED_FLOOR_KEY = 'otobeInventorySelectedFloorV1';
   const SAVE_QUEUE_KEY = 'otobeInventorySaveQueueV4';
-  const CATALOG_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+  const CATALOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
   const CATALOG_PAGE_SIZE = 250;
   const RETRY_DELAY_MS = 5000;
 
