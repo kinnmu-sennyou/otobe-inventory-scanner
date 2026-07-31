@@ -8,7 +8,10 @@
   const SELECTED_FLOOR_KEY = 'otobeInventorySelectedFloorV1';
   const SAVE_QUEUE_KEY = 'otobeInventorySaveQueueV4';
   const CATALOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-  const CATALOG_PAGE_SIZE = 250;
+  const CATALOG_PAGE_SIZE = 1000;
+  const DIRECT_CATALOG_MAX_ROWS = 2000;
+  const SAVE_BATCH_MAX_ITEMS = 5;
+  const SAVE_BATCH_MAX_ENCODED_LENGTH = 6000;
   const RETRY_DELAY_MS = 5000;
 
   const elements = {
@@ -642,6 +645,53 @@
     );
   }
 
+  function addProductsToCatalog(targetCatalog, products) {
+    (Array.isArray(products) ? products : []).forEach(product => {
+      const id = normalizeProductId(product && product.id);
+
+      if (
+        id &&
+        productLocationCode(id) === state.selectedLocationCode
+      ) {
+        targetCatalog.set(
+          id,
+          normalizeProductShelf({ ...product, id })
+        );
+      }
+    });
+  }
+
+  async function fetchCatalogByPages(location, targetCatalog) {
+    const rowCount = Math.max(Number(location.rowCount) || 0, 0);
+    let loadedCount = 0;
+
+    for (let offset = 0; offset < rowCount; offset += CATALOG_PAGE_SIZE) {
+      setSyncState(
+        location.name + 'の商品データを取得中：' +
+        loadedCount.toLocaleString('ja-JP') + ' / ' +
+        rowCount.toLocaleString('ja-JP') + '件',
+        'sending'
+      );
+
+      const page = await bridgeRequest('getScannerCatalogPage', {
+        locationCode: state.selectedLocationCode,
+        offset,
+        limit: CATALOG_PAGE_SIZE
+      });
+
+      if (!page || !page.ok || !Array.isArray(page.products)) {
+        throw new Error(
+          page && page.message
+            ? page.message
+            : location.name + 'の商品データを取得できませんでした。'
+        );
+      }
+
+      addProductsToCatalog(targetCatalog, page.products);
+      loadedCount += page.products.length;
+    }
+  }
+
   async function refreshCatalog(options = {}) {
     if (!state.bridgeReady || state.catalogRefreshing) {
       return false;
@@ -670,46 +720,35 @@
     updateSyncIndicator();
 
     try {
-      const rowCount = Math.max(Number(location.rowCount) || 0, 0);
       const nextCatalog = new Map();
-      let loadedCount = 0;
+      let directResponse = null;
 
-      for (let offset = 0; offset < rowCount; offset += CATALOG_PAGE_SIZE) {
-        setSyncState(
-          location.name + 'の商品データを取得中：' +
-          loadedCount.toLocaleString('ja-JP') + ' / ' +
-          rowCount.toLocaleString('ja-JP') + '件',
-          'sending'
-        );
+      setSyncState(
+        location.name + 'の商品データをまとめて取得しています。',
+        'sending'
+      );
 
-        const page = await bridgeRequest('getScannerCatalogPage', {
-          locationCode: state.selectedLocationCode,
-          offset,
-          limit: CATALOG_PAGE_SIZE
-        });
-
-        if (!page || !page.ok || !Array.isArray(page.products)) {
-          throw new Error(
-            page && page.message
-              ? page.message
-              : location.name + 'の商品データを取得できませんでした。'
-          );
+      if (
+        Math.max(Number(location.rowCount) || 0, 0) <=
+        DIRECT_CATALOG_MAX_ROWS
+      ) {
+        try {
+          directResponse = await bridgeRequest('getScannerFloorCatalog', {
+            locationCode: state.selectedLocationCode
+          });
+        } catch (error) {
+          directResponse = null;
         }
+      }
 
-        page.products.forEach(product => {
-          const id = normalizeProductId(product.id);
-          if (
-            id &&
-            productLocationCode(id) === state.selectedLocationCode
-          ) {
-            nextCatalog.set(
-              id,
-              normalizeProductShelf({ ...product, id })
-            );
-          }
-        });
-
-        loadedCount += page.products.length;
+      if (
+        directResponse &&
+        directResponse.ok &&
+        Array.isArray(directResponse.products)
+      ) {
+        addProductsToCatalog(nextCatalog, directResponse.products);
+      } else {
+        await fetchCatalogByPages(location, nextCatalog);
       }
 
       state.catalog = nextCatalog;
@@ -1099,6 +1138,73 @@
     }, RETRY_DELAY_MS);
   }
 
+  function createSaveBatch() {
+    const batch = [];
+
+    for (let index = 0; index < state.pendingSaves.length; index++) {
+      if (batch.length >= SAVE_BATCH_MAX_ITEMS) {
+        break;
+      }
+
+      const job = state.pendingSaves[index];
+      const candidate = [
+        ...batch,
+        {
+          clientJobId: job.id,
+          productId: job.payload.productId,
+          history: job.payload.history,
+          total: job.payload.total,
+          operatorName: job.payload.operatorName
+        }
+      ];
+      const encodedLength = encodeURIComponent(
+        JSON.stringify(candidate)
+      ).length;
+
+      if (
+        batch.length > 0 &&
+        encodedLength > SAVE_BATCH_MAX_ENCODED_LENGTH
+      ) {
+        break;
+      }
+
+      batch.push(candidate[candidate.length - 1]);
+    }
+
+    return batch;
+  }
+
+  function applyBatchSaveResults(results) {
+    const successfulJobIds = new Set();
+    let firstError = '';
+
+    (Array.isArray(results) ? results : []).forEach(result => {
+      const clientJobId = String(result && result.clientJobId || '');
+
+      if (result && result.ok && clientJobId) {
+        successfulJobIds.add(clientJobId);
+
+        if (result.product) {
+          const id = normalizeProductId(result.product.id);
+          state.catalog.set(id, normalizeProductShelf(result.product));
+        }
+      } else if (!firstError && result) {
+        firstError = result.error || result.message || '登録できませんでした。';
+      }
+    });
+
+    if (successfulJobIds.size > 0) {
+      state.pendingSaves = state.pendingSaves.filter(job => {
+        return !successfulJobIds.has(job.id);
+      });
+      persistSaveQueue();
+      persistCatalog();
+      renderProgressFromCatalog();
+    }
+
+    return firstError;
+  }
+
   async function processSaveQueue() {
     if (
       state.saveWorkerRunning ||
@@ -1114,37 +1220,42 @@
     updateSyncIndicator();
 
     while (state.pendingSaves.length > 0) {
-      const job = state.pendingSaves[0];
+      const batch = createSaveBatch();
+
+      if (batch.length === 0) {
+        break;
+      }
 
       try {
-        const response = await bridgeRequest(
-          'saveInventory',
-          job.payload
-        );
+        const response = await bridgeRequest('saveInventoryBatch', {
+          batchJson: JSON.stringify(batch)
+        });
 
-        if (!response || !response.ok) {
+        if (!response || !response.ok || !Array.isArray(response.results)) {
           throw new Error(
             response && response.message
               ? response.message
-              : '登録できませんでした。'
+              : '一括登録できませんでした。'
           );
         }
 
-        if (response.product) {
-          const id = normalizeProductId(response.product.id);
-          state.catalog.set(id, normalizeProductShelf(response.product));
+        const batchError = applyBatchSaveResults(response.results);
+
+        if (batchError) {
+          throw new Error(batchError);
         }
 
-        state.pendingSaves.shift();
         state.syncError = '';
-        persistSaveQueue();
-        persistCatalog();
-        renderProgressFromCatalog();
       } catch (error) {
-        job.attempts = Number(job.attempts || 0) + 1;
-        job.lastError = error && error.message
-          ? error.message
-          : '送信に失敗しました。';
+        const firstJob = state.pendingSaves[0];
+
+        if (firstJob) {
+          firstJob.attempts = Number(firstJob.attempts || 0) + 1;
+          firstJob.lastError = error && error.message
+            ? error.message
+            : '送信に失敗しました。';
+        }
+
         persistSaveQueue();
         state.syncError =
           '未送信' + state.pendingSaves.length + '件。自動再送します。';
