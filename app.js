@@ -4,7 +4,7 @@
   const config = window.QR_INVENTORY_CONFIG || {};
   const appUrl = String(config.APPS_SCRIPT_URL || '').trim();
   const REQUEST_TIMEOUT_MS = 30000;
-  const CATALOG_CACHE_KEY = 'otobeInventoryCatalogV6';
+  const CATALOG_CACHE_KEY = 'otobeInventoryCatalogV7';
   const SAVE_QUEUE_KEY = 'otobeInventorySaveQueueV4';
   const CATALOG_MAX_AGE_MS = 6 * 60 * 60 * 1000;
   const RETRY_DELAY_MS = 5000;
@@ -107,13 +107,13 @@
     const circledIndex = circledCharacters.indexOf(withoutShelfLabel);
 
     if (circledIndex >= 1) {
-      return String(circledIndex);
+      return '棚' + String(circledIndex);
     }
 
     if (/^\d+$/.test(withoutShelfLabel)) {
       const number = Number(withoutShelfLabel);
       return Number.isInteger(number) && number >= 1
-        ? String(number)
+        ? '棚' + String(number)
         : '';
     }
 
