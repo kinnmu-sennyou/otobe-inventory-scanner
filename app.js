@@ -1,10 +1,10 @@
-﻿(() => {
+(() => {
   'use strict';
 
   const config = window.QR_INVENTORY_CONFIG || {};
   const appUrl = String(config.APPS_SCRIPT_URL || '').trim();
   const REQUEST_TIMEOUT_MS = 30000;
-  const CATALOG_CACHE_KEY = 'otobeInventoryCatalogV4';
+  const CATALOG_CACHE_KEY = 'otobeInventoryCatalogV6';
   const SAVE_QUEUE_KEY = 'otobeInventorySaveQueueV4';
   const CATALOG_MAX_AGE_MS = 6 * 60 * 60 * 1000;
   const RETRY_DELAY_MS = 5000;
@@ -29,7 +29,6 @@
     overlayProductName: document.getElementById('overlayProductName'),
     overlayProductType: document.getElementById('overlayProductType'),
     overlayShelf: document.getElementById('overlayShelf'),
-    overlayLastInput: document.getElementById('overlayLastInput'),
     historyValue: document.getElementById('historyValue'),
     totalValue: document.getElementById('totalValue'),
     numberKeyButtons: Array.from(document.querySelectorAll('[data-number-key]')),
@@ -84,6 +83,48 @@
       .trim()
       .replace(/[－ー―]/g, '-')
       .toUpperCase();
+  }
+
+  function normalizeShelfNumber(value) {
+    const text = String(value === null || value === undefined ? '' : value)
+      .trim()
+      .replace(/[０-９]/g, character =>
+        String.fromCharCode(character.charCodeAt(0) - 0xFEE0)
+      );
+
+    if (!text) {
+      return '';
+    }
+
+    const circledCharacters = [
+      '', '①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩',
+      '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱', '⑲', '⑳',
+      '㉑', '㉒', '㉓', '㉔', '㉕', '㉖', '㉗', '㉘', '㉙', '㉚'
+    ];
+    const withoutShelfLabel = text
+      .replace(/^棚(?:番号)?\s*/i, '')
+      .trim();
+    const circledIndex = circledCharacters.indexOf(withoutShelfLabel);
+
+    if (circledIndex >= 1) {
+      return String(circledIndex);
+    }
+
+    if (/^\d+$/.test(withoutShelfLabel)) {
+      const number = Number(withoutShelfLabel);
+      return Number.isInteger(number) && number >= 1
+        ? String(number)
+        : '';
+    }
+
+    return text;
+  }
+
+  function normalizeProductShelf(product) {
+    return {
+      ...product,
+      shelf: normalizeShelfNumber(product && product.shelf)
+    };
   }
 
   function extractProductId(decodedText) {
@@ -245,12 +286,34 @@
     return [];
   }
 
+  function compressHistoryTerms(terms) {
+    const counts = new Map();
+    const order = [];
+
+    terms.forEach(value => {
+      const term = normalizeTerm(value);
+
+      if (!counts.has(term)) {
+        counts.set(term, 0);
+        order.push(term);
+      }
+
+      counts.set(term, counts.get(term) + 1);
+    });
+
+    return order.map(term => {
+      const count = counts.get(term);
+      return count > 1 ? term + '×' + count : term;
+    });
+  }
+
   function currentHistoryDisplay() {
-    return state.entries.map(term => '+' + term).join('');
+    const stored = currentStoredHistory();
+    return stored ? '+' + stored : '';
   }
 
   function currentStoredHistory() {
-    return state.entries.join('+');
+    return compressHistoryTerms(state.entries).join('+');
   }
 
   function currentTotal() {
@@ -335,6 +398,7 @@
   }
 
   function renderProduct(product) {
+    product = normalizeProductShelf(product || {});
     state.product = { ...product };
     setSaving(false);
     state.entries = parseHistory(
@@ -346,9 +410,8 @@
     elements.overlayProductName.textContent =
       product.name || '商品名未登録';
     elements.overlayProductType.textContent = product.type || '';
-    elements.overlayShelf.textContent = [product.locationName, product.shelf].filter(Boolean).join(' / ') || '-';
-    elements.overlayLastInput.textContent =
-      product.inputAt || '未入力';
+    elements.overlayShelf.textContent =
+      [product.shelf, product.locationName].filter(Boolean).join(' / ') || '-';
 
     elements.entryInput.value = '';
     state.entryCommitted = false;
@@ -422,7 +485,7 @@
       products.forEach(product => {
         const id = normalizeProductId(product.id);
         if (id) {
-          state.catalog.set(id, { ...product, id });
+          state.catalog.set(id, normalizeProductShelf({ ...product, id }));
         }
       });
       state.catalogUpdatedAt = Number(data.updatedAt) || 0;
@@ -535,7 +598,7 @@
       response.products.forEach(product => {
         const id = normalizeProductId(product.id);
         if (id) {
-          state.catalog.set(id, { ...product, id });
+          state.catalog.set(id, normalizeProductShelf({ ...product, id }));
         }
       });
       state.catalogLoaded = true;
@@ -605,9 +668,9 @@
         );
       }
 
-      state.catalog.set(id, response.product);
+      state.catalog.set(id, normalizeProductShelf(response.product));
       persistCatalog();
-      renderProduct(response.product);
+      renderProduct(normalizeProductShelf(response.product));
       state.lastScannedId = id;
     } catch (error) {
       setOverlayLoading(false);
@@ -913,7 +976,7 @@
 
         if (response.product) {
           const id = normalizeProductId(response.product.id);
-          state.catalog.set(id, response.product);
+          state.catalog.set(id, normalizeProductShelf(response.product));
         }
 
         state.pendingSaves.shift();
