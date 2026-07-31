@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
@@ -17,6 +17,25 @@
       <p>QRをかざすと、この画面の上に商品情報と数量入力が表示されます。</p>
     </header>
 
+    <section class="card floor-card" id="floorPicker">
+      <h2>棚卸するフロア</h2>
+      <p>フロアを選ぶと、そのフロアの商品だけを端末へ読み込みます。</p>
+      <div class="floor-select-row">
+        <select id="floorSelect" aria-label="棚卸するフロア">
+          <option value="">フロアを選択</option>
+        </select>
+        <button class="primary" id="selectFloorButton" type="button">このフロアで開始</button>
+      </div>
+    </section>
+
+    <section class="active-floor" id="activeFloor" hidden aria-live="polite">
+      <div>
+        <span>選択中のフロア</span>
+        <strong id="selectedFloorName">-</strong>
+      </div>
+      <button class="secondary" id="changeFloorButton" type="button">フロア変更</button>
+    </section>
+
     <section class="progress" aria-label="棚卸進捗">
       <div class="progress-item">
         <span>完了</span>
@@ -33,7 +52,7 @@
     </section>
 
     <div class="sync-bar" aria-live="polite">
-      <span id="syncState">商品データを準備しています。</span>
+      <span id="syncState">棚卸するフロアを選択してください。</span>
       <button id="refreshDataButton" type="button">商品データ更新</button>
     </div>
 
@@ -46,7 +65,7 @@
         </div>
       </div>
 
-      <div class="status" id="status">商品データを準備しています。</div>
+      <div class="status" id="status">フロア情報を読み込んでいます。</div>
 
       <div class="button-grid">
         <button class="primary" id="startButton" type="button" disabled>カメラを起動</button>

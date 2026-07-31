@@ -4,12 +4,20 @@
   const config = window.QR_INVENTORY_CONFIG || {};
   const appUrl = String(config.APPS_SCRIPT_URL || '').trim();
   const REQUEST_TIMEOUT_MS = 30000;
-  const CATALOG_CACHE_KEY = 'otobeInventoryCatalogV7';
+  const CATALOG_CACHE_PREFIX = 'otobeInventoryCatalogV9:';
+  const SELECTED_FLOOR_KEY = 'otobeInventorySelectedFloorV1';
   const SAVE_QUEUE_KEY = 'otobeInventorySaveQueueV4';
   const CATALOG_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+  const CATALOG_PAGE_SIZE = 250;
   const RETRY_DELAY_MS = 5000;
 
   const elements = {
+    floorPicker: document.getElementById('floorPicker'),
+    floorSelect: document.getElementById('floorSelect'),
+    selectFloorButton: document.getElementById('selectFloorButton'),
+    activeFloor: document.getElementById('activeFloor'),
+    selectedFloorName: document.getElementById('selectedFloorName'),
+    changeFloorButton: document.getElementById('changeFloorButton'),
     status: document.getElementById('status'),
     startButton: document.getElementById('startButton'),
     stopButton: document.getElementById('stopButton'),
@@ -29,6 +37,7 @@
     overlayProductName: document.getElementById('overlayProductName'),
     overlayProductType: document.getElementById('overlayProductType'),
     overlayShelf: document.getElementById('overlayShelf'),
+    overlayLastInput: document.getElementById('overlayLastInput'),
     historyValue: document.getElementById('historyValue'),
     totalValue: document.getElementById('totalValue'),
     numberKeyButtons: Array.from(document.querySelectorAll('[data-number-key]')),
@@ -65,8 +74,43 @@
     pendingSaves: [],
     saveWorkerRunning: false,
     retryTimer: 0,
-    syncError: ''
+    syncError: '',
+    locations: [],
+    selectedLocationCode: '',
+    selectedLocationName: ''
   };
+
+  function catalogCacheKey(locationCode) {
+    return CATALOG_CACHE_PREFIX + String(locationCode || '').toUpperCase();
+  }
+
+  function productLocationCode(productId) {
+    const normalized = normalizeProductId(productId);
+    const match = normalized.match(/^([A-Z0-9]{2,8})-/);
+    return match ? match[1] : '';
+  }
+
+  function selectedLocation() {
+    return state.locations.find(location => {
+      return String(location.code || '').toUpperCase() ===
+        state.selectedLocationCode;
+    }) || null;
+  }
+
+  function updateFloorUi() {
+    const selected = Boolean(state.selectedLocationCode);
+    elements.floorPicker.hidden = selected;
+    elements.activeFloor.hidden = !selected;
+    elements.selectedFloorName.textContent = selected
+      ? state.selectedLocationName + '（' + state.selectedLocationCode + '）'
+      : '-';
+  }
+
+  function resetProgress() {
+    elements.completedCount.textContent = '-';
+    elements.remainingCount.textContent = '-';
+    elements.progressPercent.textContent = '-%';
+  }
 
   function setStatus(message, type = '') {
     elements.status.textContent = message;
@@ -413,6 +457,8 @@
     elements.overlayShelf.textContent =
       [product.shelf, product.locationName].filter(Boolean).join(' / ') || '-';
 
+    elements.overlayLastInput.textContent = product.inputAt || '未入力';
+
     elements.entryInput.value = '';
     state.entryCommitted = false;
     renderCount();
@@ -448,15 +494,21 @@
 
   function serializeCatalog() {
     return {
+      locationCode: state.selectedLocationCode,
+      locationName: state.selectedLocationName,
       updatedAt: state.catalogUpdatedAt || Date.now(),
       products: Array.from(state.catalog.values())
     };
   }
 
   function persistCatalog() {
+    if (!state.selectedLocationCode) {
+      return;
+    }
+
     try {
       localStorage.setItem(
-        CATALOG_CACHE_KEY,
+        catalogCacheKey(state.selectedLocationCode),
         JSON.stringify(serializeCatalog())
       );
     } catch (error) {
@@ -464,9 +516,10 @@
     }
   }
 
-  function loadCatalogCache() {
+  function loadCatalogCache(locationCode) {
     try {
-      const raw = localStorage.getItem(CATALOG_CACHE_KEY);
+      const normalizedCode = String(locationCode || '').toUpperCase();
+      const raw = localStorage.getItem(catalogCacheKey(normalizedCode));
 
       if (!raw) {
         return false;
@@ -477,14 +530,17 @@
         ? data.products
         : [];
 
-      if (products.length === 0) {
+      if (
+        String(data.locationCode || '').toUpperCase() !== normalizedCode ||
+        products.length === 0
+      ) {
         return false;
       }
 
       state.catalog.clear();
       products.forEach(product => {
         const id = normalizeProductId(product.id);
-        if (id) {
+        if (id && productLocationCode(id) === normalizedCode) {
           state.catalog.set(id, normalizeProductShelf({ ...product, id }));
         }
       });
@@ -522,6 +578,13 @@
 
   function applySaveToLocalProduct(payload, inputAt) {
     const id = normalizeProductId(payload.productId);
+
+    if (
+      state.selectedLocationCode &&
+      productLocationCode(id) !== state.selectedLocationCode
+    ) {
+      return;
+    }
     const current = state.catalog.get(id) || {
       id,
       shelf: '',
@@ -564,11 +627,17 @@
       return;
     }
 
+    if (!state.selectedLocationCode) {
+      setSyncState('棚卸するフロアを選択してください。', '');
+      return;
+    }
+
     const count = state.catalog.size;
     setSyncState(
       count > 0
-        ? '高速読取準備済み：' + count.toLocaleString('ja-JP') + '商品'
-        : '商品データ未取得',
+        ? state.selectedLocationName + '：高速読取準備済み ' +
+          count.toLocaleString('ja-JP') + '商品'
+        : state.selectedLocationName + '：商品データ未取得',
       ''
     );
   }
@@ -578,45 +647,97 @@
       return false;
     }
 
+    if (!state.selectedLocationCode) {
+      setSyncState('棚卸するフロアを選択してください。', 'error');
+      return false;
+    }
+
     if (state.pendingSaves.length > 0 && !options.force) {
+      return false;
+    }
+
+    const location = selectedLocation();
+
+    if (!location) {
+      setSyncState('選択したフロア情報を確認できません。', 'error');
       return false;
     }
 
     state.catalogRefreshing = true;
     state.syncError = '';
     elements.refreshDataButton.disabled = true;
+    elements.startButton.disabled = true;
     updateSyncIndicator();
 
     try {
-      const response = await bridgeRequest('getScannerCatalog');
+      const rowCount = Math.max(Number(location.rowCount) || 0, 0);
+      const nextCatalog = new Map();
+      let loadedCount = 0;
 
-      if (!response || !response.ok || !Array.isArray(response.products)) {
-        throw new Error('商品一覧を取得できませんでした。');
+      for (let offset = 0; offset < rowCount; offset += CATALOG_PAGE_SIZE) {
+        setSyncState(
+          location.name + 'の商品データを取得中：' +
+          loadedCount.toLocaleString('ja-JP') + ' / ' +
+          rowCount.toLocaleString('ja-JP') + '件',
+          'sending'
+        );
+
+        const page = await bridgeRequest('getScannerCatalogPage', {
+          locationCode: state.selectedLocationCode,
+          offset,
+          limit: CATALOG_PAGE_SIZE
+        });
+
+        if (!page || !page.ok || !Array.isArray(page.products)) {
+          throw new Error(
+            page && page.message
+              ? page.message
+              : location.name + 'の商品データを取得できませんでした。'
+          );
+        }
+
+        page.products.forEach(product => {
+          const id = normalizeProductId(product.id);
+          if (
+            id &&
+            productLocationCode(id) === state.selectedLocationCode
+          ) {
+            nextCatalog.set(
+              id,
+              normalizeProductShelf({ ...product, id })
+            );
+          }
+        });
+
+        loadedCount += page.products.length;
       }
 
-      state.catalog.clear();
-      response.products.forEach(product => {
-        const id = normalizeProductId(product.id);
-        if (id) {
-          state.catalog.set(id, normalizeProductShelf({ ...product, id }));
-        }
-      });
+      state.catalog = nextCatalog;
       state.catalogLoaded = true;
       state.catalogUpdatedAt = Date.now();
       applyPendingSavesToCatalog();
       persistCatalog();
       renderProgressFromCatalog();
       elements.startButton.disabled = false;
+      setStatus(
+        state.selectedLocationName + 'の準備完了。「カメラを起動」を押してください。',
+        'success'
+      );
       updateSyncIndicator();
       return true;
     } catch (error) {
+      const detail = error && error.message
+        ? error.message
+        : '原因不明の通信エラーです。';
+
       if (!state.catalogLoaded) {
-        state.syncError = '商品データ取得失敗。QR読取時に個別取得します。';
+        state.syncError = '商品データ取得失敗：' + detail;
+        setSyncState(state.syncError, 'error');
+        elements.startButton.disabled = true;
+      } else {
+        state.syncError = '商品データ更新失敗：' + detail;
         setSyncState(state.syncError, 'error');
         elements.startButton.disabled = false;
-      } else {
-        state.syncError = '商品データ更新に失敗しました。';
-        setSyncState(state.syncError, 'error');
       }
       return false;
     } finally {
@@ -629,9 +750,35 @@
   async function showProduct(productId) {
     const id = normalizeProductId(productId);
 
+    if (!state.selectedLocationCode) {
+      setStatus('先に棚卸するフロアを選択してください。', 'error');
+      state.scanLocked = false;
+      return;
+    }
+
     if (!/^[A-Z0-9]{2,8}-\d{5,}$/.test(id)) {
       setStatus(
         '商品IDを読み取れませんでした。棚卸用QRをかざしてください。',
+        'error'
+      );
+      state.scanLocked = false;
+      return;
+    }
+
+    const scannedLocationCode = productLocationCode(id);
+
+    if (scannedLocationCode !== state.selectedLocationCode) {
+      const scannedLocation = state.locations.find(location => {
+        return String(location.code || '').toUpperCase() ===
+          scannedLocationCode;
+      });
+      const scannedName = scannedLocation
+        ? scannedLocation.name
+        : scannedLocationCode || '別フロア';
+
+      setStatus(
+        '選択中は「' + state.selectedLocationName + '」です。' +
+        '「' + scannedName + '」の商品は読み取れません。',
         'error'
       );
       state.scanLocked = false;
@@ -668,9 +815,18 @@
         );
       }
 
-      state.catalog.set(id, normalizeProductShelf(response.product));
+      const responseProduct = normalizeProductShelf(response.product);
+      const responseLocationCode = String(
+        responseProduct.locationCode || productLocationCode(responseProduct.id)
+      ).toUpperCase();
+
+      if (responseLocationCode !== state.selectedLocationCode) {
+        throw new Error('選択中のフロアと異なる商品です。');
+      }
+
+      state.catalog.set(id, responseProduct);
       persistCatalog();
-      renderProduct(normalizeProductShelf(response.product));
+      renderProduct(responseProduct);
       state.lastScannedId = id;
     } catch (error) {
       setOverlayLoading(false);
@@ -1037,6 +1193,95 @@
     closeOverlay({ queued: true });
   }
 
+  function populateFloorOptions(locations) {
+    const previous = localStorage.getItem(SELECTED_FLOOR_KEY) || '';
+    elements.floorSelect.innerHTML = '<option value="">フロアを選択</option>';
+
+    locations.forEach(location => {
+      const option = document.createElement('option');
+      option.value = String(location.code || '').toUpperCase();
+      option.textContent = location.name + '（' + option.value + '）';
+      elements.floorSelect.appendChild(option);
+    });
+
+    if ([...elements.floorSelect.options].some(option => {
+      return option.value === previous;
+    })) {
+      elements.floorSelect.value = previous;
+    }
+  }
+
+  async function selectFloor() {
+    const code = String(elements.floorSelect.value || '').toUpperCase();
+    const location = state.locations.find(item => {
+      return String(item.code || '').toUpperCase() === code;
+    });
+
+    if (!location) {
+      setStatus('棚卸するフロアを選択してください。', 'error');
+      return;
+    }
+
+    if (state.running) {
+      await stopScanner();
+    }
+
+    state.selectedLocationCode = code;
+    state.selectedLocationName = String(location.name || code);
+    state.catalog.clear();
+    state.catalogLoaded = false;
+    state.catalogUpdatedAt = 0;
+    state.lastScannedId = '';
+    state.ignoreSameCodeUntil = 0;
+    state.syncError = '';
+    localStorage.setItem(SELECTED_FLOOR_KEY, code);
+    updateFloorUi();
+    resetProgress();
+    elements.startButton.disabled = true;
+    setStatus(state.selectedLocationName + 'の商品データを準備しています。');
+
+    const hasCache = loadCatalogCache(code);
+
+    if (hasCache) {
+      elements.startButton.disabled = false;
+      setStatus(
+        state.selectedLocationName + 'の準備完了。「カメラを起動」を押してください。',
+        'success'
+      );
+      updateSyncIndicator();
+
+      if (
+        Date.now() - state.catalogUpdatedAt > CATALOG_MAX_AGE_MS &&
+        state.pendingSaves.length === 0
+      ) {
+        window.setTimeout(() => refreshCatalog(), 1000);
+      }
+    } else {
+      await refreshCatalog({ force: true });
+    }
+  }
+
+  async function changeFloor() {
+    if (state.running) {
+      await stopScanner();
+    }
+
+    state.selectedLocationCode = '';
+    state.selectedLocationName = '';
+    state.catalog.clear();
+    state.catalogLoaded = false;
+    state.catalogUpdatedAt = 0;
+    state.lastScannedId = '';
+    state.ignoreSameCodeUntil = 0;
+    state.syncError = '';
+    updateFloorUi();
+    resetProgress();
+    elements.startButton.disabled = true;
+    elements.stopButton.disabled = true;
+    setStatus('棚卸するフロアを選択してください。');
+    updateSyncIndicator();
+  }
+
   function manualOpen() {
     if (state.scanLocked) {
       return;
@@ -1060,32 +1305,56 @@
 
     state.bridgeReady = true;
     loadSaveQueue();
-    const hasCache = loadCatalogCache();
+    resetProgress();
+    updateFloorUi();
+    elements.startButton.disabled = true;
+    setStatus('フロア情報を読み込んでいます。');
 
-    if (hasCache) {
-      elements.startButton.disabled = false;
-      setStatus('準備完了。「カメラを起動」を押してください。', 'success');
-      updateSyncIndicator();
+    try {
+      const manifest = await bridgeRequest('getScannerCatalogManifest');
 
-      if (
-        Date.now() - state.catalogUpdatedAt > CATALOG_MAX_AGE_MS &&
-        state.pendingSaves.length === 0
-      ) {
-        window.setTimeout(() => refreshCatalog(), 2500);
+      if (!manifest || !manifest.ok || !Array.isArray(manifest.locations)) {
+        throw new Error(
+          manifest && manifest.message
+            ? manifest.message
+            : 'フロア情報を取得できませんでした。'
+        );
       }
-    } else {
-      setStatus('初回だけ商品データを読み込んでいます。');
-      await refreshCatalog({ force: true });
-      setStatus('準備完了。「カメラを起動」を押してください。', 'success');
+
+      state.locations = manifest.locations.map(location => ({
+        ...location,
+        code: String(location.code || '').toUpperCase()
+      }));
+      populateFloorOptions(state.locations);
+      setStatus('棚卸するフロアを選択してください。', 'success');
+      updateSyncIndicator();
+    } catch (error) {
+      const detail = error && error.message
+        ? error.message
+        : '原因不明の通信エラーです。';
+      setStatus('フロア情報取得失敗：' + detail, 'error');
+      setSyncState('フロア情報取得失敗：' + detail, 'error');
     }
 
     processSaveQueue();
   }
 
+  elements.selectFloorButton.addEventListener('click', selectFloor);
+  elements.changeFloorButton.addEventListener('click', changeFloor);
+  elements.floorSelect.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      selectFloor();
+    }
+  });
   elements.startButton.addEventListener('click', startScanner);
   elements.stopButton.addEventListener('click', stopScanner);
   elements.manualButton.addEventListener('click', manualOpen);
   elements.refreshDataButton.addEventListener('click', async () => {
+    if (!state.selectedLocationCode) {
+      setSyncState('先に棚卸するフロアを選択してください。', 'error');
+      return;
+    }
+
     if (state.pendingSaves.length > 0) {
       setSyncState('未送信データを先に送信しています。', 'sending');
       processSaveQueue();

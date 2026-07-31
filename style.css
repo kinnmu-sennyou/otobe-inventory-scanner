@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   color-scheme: light;
   --bg: #edf1f2;
   --card: #fff;
@@ -660,4 +660,85 @@ h1 {
 
 .number-keypad .backspace-key {
   grid-column: 1 / -1;
+}
+
+
+.floor-card {
+  padding: 14px;
+}
+
+.floor-card h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.floor-card p {
+  margin: 6px 0 12px;
+  color: var(--sub);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.floor-select-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.floor-select-row select {
+  width: 100%;
+  min-height: 52px;
+  border: 1px solid #b6c1c6;
+  border-radius: 10px;
+  padding: 0 38px 0 13px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+}
+
+.active-floor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+  border: 1px solid #b9d9cc;
+  border-radius: 13px;
+  padding: 10px 10px 10px 13px;
+  background: var(--success-bg);
+}
+
+.active-floor[hidden] {
+  display: none;
+}
+
+.active-floor span {
+  display: block;
+  color: var(--success);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.active-floor strong {
+  display: block;
+  margin-top: 2px;
+  color: var(--success);
+  font-size: 18px;
+}
+
+.active-floor button {
+  min-height: 40px;
+  padding: 0 11px;
+  font-size: 12px;
+}
+
+@media (max-width: 480px) {
+  .floor-select-row {
+    grid-template-columns: 1fr;
+  }
+
+  .floor-select-row button {
+    width: 100%;
+  }
 }
