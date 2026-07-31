@@ -4,7 +4,7 @@
   const config = window.QR_INVENTORY_CONFIG || {};
   const appUrl = String(config.APPS_SCRIPT_URL || '').trim();
   const REQUEST_TIMEOUT_MS = 30000;
-  const CATALOG_CACHE_PREFIX = 'otobeInventoryCatalogV9:';
+  const CATALOG_CACHE_PREFIX = 'otobeInventoryCatalogV10:';
   const SELECTED_FLOOR_KEY = 'otobeInventorySelectedFloorV1';
   const SAVE_QUEUE_KEY = 'otobeInventorySaveQueueV4';
   const CATALOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -15,6 +15,7 @@
   const RETRY_DELAY_MS = 5000;
 
   const elements = {
+    activeFiscalYearLabel: document.getElementById('activeFiscalYearLabel'),
     floorPicker: document.getElementById('floorPicker'),
     floorSelect: document.getElementById('floorSelect'),
     selectFloorButton: document.getElementById('selectFloorButton'),
@@ -79,12 +80,14 @@
     retryTimer: 0,
     syncError: '',
     locations: [],
+    activeFiscalYear: 0,
     selectedLocationCode: '',
     selectedLocationName: ''
   };
 
   function catalogCacheKey(locationCode) {
-    return CATALOG_CACHE_PREFIX + String(locationCode || '').toUpperCase();
+    return CATALOG_CACHE_PREFIX + String(state.activeFiscalYear || 'unknown') + ':' +
+      String(locationCode || '').toUpperCase();
   }
 
   function productLocationCode(productId) {
@@ -497,6 +500,7 @@
 
   function serializeCatalog() {
     return {
+      fiscalYear: state.activeFiscalYear,
       locationCode: state.selectedLocationCode,
       locationName: state.selectedLocationName,
       updatedAt: state.catalogUpdatedAt || Date.now(),
@@ -534,6 +538,7 @@
         : [];
 
       if (
+        Number(data.fiscalYear) !== Number(state.activeFiscalYear) ||
         String(data.locationCode || '').toUpperCase() !== normalizedCode ||
         products.length === 0
       ) {
@@ -734,7 +739,8 @@
       ) {
         try {
           directResponse = await bridgeRequest('getScannerFloorCatalog', {
-            locationCode: state.selectedLocationCode
+            locationCode: state.selectedLocationCode,
+            fiscalYear: state.activeFiscalYear
           });
         } catch (error) {
           directResponse = null;
@@ -843,7 +849,8 @@
 
     try {
       const response = await bridgeRequest('getProduct', {
-        productId: id
+        productId: id,
+        fiscalYear: state.activeFiscalYear
       });
 
       if (!response || !response.ok) {
@@ -1154,7 +1161,8 @@
           productId: job.payload.productId,
           history: job.payload.history,
           total: job.payload.total,
-          operatorName: job.payload.operatorName
+          operatorName: job.payload.operatorName,
+          fiscalYear: job.payload.fiscalYear || state.activeFiscalYear
         }
       ];
       const encodedLength = encodeURIComponent(
@@ -1295,7 +1303,8 @@
       productId: state.product.id,
       history: currentStoredHistory(),
       total: currentTotal(),
-      operatorName: 'QR棚卸'
+      operatorName: 'QR棚卸',
+      fiscalYear: state.activeFiscalYear
     };
 
     setSaving(true);
@@ -1432,6 +1441,12 @@
         );
       }
 
+      state.activeFiscalYear = Number(manifest.fiscalYear) || 0;
+      if (elements.activeFiscalYearLabel) {
+        elements.activeFiscalYearLabel.textContent = state.activeFiscalYear
+          ? state.activeFiscalYear + '年度の棚卸'
+          : '棚卸対象年度未設定';
+      }
       state.locations = manifest.locations.map(location => ({
         ...location,
         code: String(location.code || '').toUpperCase()
